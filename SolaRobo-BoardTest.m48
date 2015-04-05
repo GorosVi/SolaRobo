@@ -1,0 +1,648 @@
+; ATMega48 @ 1 MHz. All FUSE values except HFUSE has the default values.
+; HFUSE = 0xD6 = (0<<EESAVE)|(110b<<BODLEVEL0) - preserve EEPROM and 1.8V BOD enable.
+; (c) GorosVia'2015
+
+	; TODO: Add console logging
+	; TODO: Check cli areas more strongly, no matter that reset system in its
+	; check ADC start conditions to give more precise data
+
+	.nolist
+	.include "m48PAdef.inc"
+	.list
+	.listmac
+
+
+	.equ LEDPort = PORTD
+	.equ LEDPin  = PD4
+
+	.equ IOPort  = PORTC
+	.equ IO5     = PC4
+	.equ IO6     = PC5
+	.equ IO7     = PC2
+	.equ IO8     = PC3
+	.equ IO9     = PC0
+	.equ IO10    = PC1
+
+	.equ ExtVoltSense = IO5 ; 0 - 6V  =>  0 - 1.1V - from solar panel
+	.equ IntVoltSense = IO6 ; 0 - 6V  =>  0 - 1.1V - on VCORE capacitors
+
+	; Step-up key
+	.equ DIMPort = PORTD
+	.equ DIMPin  = PD3 ; IO4
+
+	; RESET pullup pin
+	.equ PSTPort = PORTB
+	.equ RSTPUP  = PB0
+
+
+	#define LogEnable
+	; TXD pin
+	.equ ConPort = PORTD
+	.equ ConPin  = PD1 ; IO3
+
+	; Output constant string to USART1
+	.macro log
+	#ifdef LogEnable
+		push ZL
+		push ZH
+		ldi ZL, low(text*2)
+		ldi ZH, high(text*2)
+		rcall LogWrite
+		pop ZH
+		pop ZL
+		rjmp exit
+	text:
+		.db @0, 0
+	exit:
+	#endif
+	.endm
+
+	; Store register to output with log macro call
+	.macro logreg
+	#ifdef LogEnable
+		sts LogTempReg, @0
+	#endif
+	.endm
+
+	;#define DisableUsingPRR
+	;#define DisableBODOnSleep
+
+	.equ SlModeIdle       = 0
+	.equ SlModeADC        = 1
+	.equ SlModePwrDown    = 2
+	.equ SlModePwrSave    = 3
+	.equ SlModeStandby    = 6
+	.equ SlModeExtStandby = 7
+
+	.macro GoSleep
+		push r16
+		ldi r16, (@0<<SM0)|(1<<SE)
+		logreg r16
+		rcall DoSleep
+		pop r16
+		log "Awaking from sleep="
+	.endm
+
+
+	.equ WDTimeout16ms   = (0<<WDP0)|(0<<WDP3)
+	.equ WDTimeout32ms   = (1<<WDP0)|(0<<WDP3)
+	.equ WDTimeout64ms   = (2<<WDP0)|(0<<WDP3)
+	.equ WDTimeout128ms  = (3<<WDP0)|(0<<WDP3)
+	.equ WDTimeout256ms  = (4<<WDP0)|(0<<WDP3)
+	.equ WDTimeout512ms  = (5<<WDP0)|(0<<WDP3)
+	.equ WDTimeout1024ms = (6<<WDP0)|(0<<WDP3)
+	.equ WDTimeout2048ms = (7<<WDP0)|(0<<WDP3)
+	.equ WDTimeout4096ms = (0<<WDP0)|(1<<WDP3)
+	.equ WDTimeout8192ms = (1<<WDP0)|(1<<WDP3)
+
+	.macro SetWatchdogTimeout
+		push r16
+		in r16, SREG
+		push r16
+		cli
+		wdr
+		lds r16, WDTCSR
+		ori r16, (1<<WDCE)|(1<<WDE)
+		sts WDTCSR, r16
+		ldi r16, (1<<WDIE)|@0
+		sts WDTCSR, r16
+		pop r16
+		out SREG, r16
+		pop r16
+	.endm
+
+
+
+	.eseg
+	.org 1
+
+	; ADC calibraton values
+	EEADCGnd:
+	.byte 1
+
+	EEADCBandgap:
+	.byte 1
+
+	EEClockCalibration :
+	.byte 1
+
+
+
+	.dseg
+	.org SRAM_START
+
+	; ADC calibraton values
+	ADCGnd:
+	.byte 1
+
+	ADCBandgap:
+	.byte 1
+
+	#ifdef LogEnable
+	LogTempReg :
+	.byte 1
+	#endif
+
+
+
+	.cseg
+	.org 0x0000
+
+	rjmp RESET      ; Reset Handler
+	rjmp IRQ_Trap   ; IRQ0 Handler
+	rjmp IRQ_Trap   ; IRQ1 Handler
+	rjmp IRQ_Trap   ; PCINT0 Handler
+	rjmp IRQ_Trap   ; PCINT1 Handler
+	rjmp IRQ_Trap   ; PCINT2 Handler
+	rjmp Int_WDog  ; Watchdog Timer Handler
+	rjmp IRQ_Trap   ; Timer2 Compare A Handler
+	rjmp IRQ_Trap   ; Timer2 Compare B Handler
+	rjmp IRQ_Trap   ; Timer2 Overflow Handler
+	rjmp IRQ_Trap   ; Timer1 Capture Handler
+	rjmp IRQ_Trap   ; Timer1 Compare A Handler
+	rjmp IRQ_Trap   ; Timer1 Compare B Handler
+	rjmp IRQ_Trap   ; Timer1 Overflow Handler
+	rjmp IRQ_Trap   ; Timer0 Compare A Handler
+	rjmp IRQ_Trap   ; Timer0 Compare B Handler
+	rjmp IRQ_Trap   ; Timer0 Overflow Handler
+	rjmp IRQ_Trap   ; SPI Transfer Complete Handler
+	rjmp IRQ_Trap   ; USART, RX Complete Handler
+	rjmp IRQ_Trap   ; USART, UDR Empty Handler
+	rjmp IRQ_Trap   ; USART, TX Complete Handler
+	rjmp Int_ADCr   ; ADC Conversion Complete Handler
+	rjmp Int_EERdy  ; EEPROM Ready Handler
+	rjmp Int_CompMatch ; Analog Comparator Handler
+	rjmp IRQ_Trap   ; 2-wire Serial Interface Handler
+	rjmp IRQ_Trap   ; Store Program Memory Ready Handler
+
+	.db 10, 13, " Get source code at https://github.com/GorosVia/SolaRobo/ =)", 10, 13
+
+IRQ_Trap:
+	rjmp PC
+
+Int_WDog:
+	log "Wachdog int"
+	rjmp PC
+	reti
+
+Int_ADCr:
+	log "ADC int"
+	reti
+
+Int_EERdy:
+	log "EEPROM int "
+	reti
+
+Int_CompMatch:
+	log "Compare int"
+	reti
+
+RESET:	cli
+	wdr
+
+	; Set all pin states, including RESET pullup
+	clr r16
+	out DDRB, r16
+	out DDRC, r16
+	out DDRD, r16
+	ser r16
+	out PORTB, r16
+	out PORTC, r16
+	out PORTD, r16
+
+	cbi LEDPort, LEDPin ; Disable pullup
+	sbi LEDPort-1, LEDPin ; DDR
+
+	; Off step-up key transistor
+	cbi DIMPort, DIMPin ; Disable pullup
+	sbi DIMPort-1, DIMPin ; DDR
+
+	; IO config
+	; TODO: should be corrected later
+	;in r16, IOPort   ; Disable pullup
+	;cbr r16, (1<<)
+	;sbr r16, (1<<)
+	;out IOPort, r16
+
+	;in r16, IOPort-1 ; DDR
+	;cbr r16, (1<<)
+	;sbr r16, (1<<)
+	;out IOPort-1, r16
+
+	; Disable all periphery
+	ldi r16, (0<<ADEN)
+	sts ADCSRA, r16
+
+	#ifndef DisableUsingPRR
+	ldi r16, (1<<PRTWI)|(1<<PRTIM2)|(1<<PRTIM0)|(1<<PRTIM1)|(1<<PRSPI)|(1<<PRUSART0)|(1<<PRADC)
+	ldi r16, (1<<PRTWI)|(1<<PRTIM2)|(1<<PRTIM0)|(1<<PRTIM1)|(1<<PRSPI)|(1<<PRADC)
+	sts PRR, r16
+	#endif
+
+	ldi r16, (1<<ACD)
+	out ACSR, r16
+
+	; Disable input buffers on probably analog inputs
+	ldi r16, (1<<ADC5D)|(1<<ADC4D)|(1<<ADC3D)|(1<<ADC2D)|(1<<ADC1D)|(1<<ADC0D)
+	sts DIDR0, r16
+	ldi r16, (1<<AIN1D)|(1<<AIN0D)
+	sts DIDR1, r16
+
+
+	; Configure stack pointer
+	ldi r16, high(RAMEND)
+	out SPH, r16
+	ldi r16, low(RAMEND)
+	out SPL, r16
+
+	log ">"
+
+	;Interrupts and periphery
+	; Enable WDT interrupt to 64 ms timeout
+	SetWatchdogTimeout WDTimeout2048ms
+
+	; Enable ADC with 15KHz clock and bandgap 1.1V reference, left adjust result
+	; Bandgap source was started with pre-enabled BOD. Interrupt enabled.
+	#ifndef DisableUsingPRR
+	lds r16, PRR
+	cbr r16, (1<<PRADC)
+	sts PRR, r16
+	#endif
+
+	ldi r16, (1<<ADEN)|(1<<ADIE)|(4<<ADPS0) ; 64 KHz
+	sts ADCSRA, r16
+
+	; Setup the external voltage channel
+	ldi r16, (1<<ADLAR)|(3<<REFS0)|(ExtVoltSense << MUX0)
+	sts ADMUX, r16
+
+
+	; Enable comparator to external voltage channel and bandgap referenca with overflow interrupt
+	;  to prevent device damage if input voltage exceeds 6V on rising edge)
+	ldi r16, (0<<ACD)|(1<<ACBG)|(1<<ACIE)|(3<<ACIS0)
+	out ACSR, r16
+
+	lds r16, ADCSRB
+	sbr r16, (1<<ACME)
+	sts ADCSRB, r16
+
+	; Load ADC calibration values from EEPROM
+	ldi r16, EEADCGnd
+	out EEARL, r16
+	sbi EECR, EERE
+	in r16, EEDR
+	sts ADCGnd, r16
+
+	ldi r16, EEADCBandgap
+	out EEARL, r16
+	sbi EECR, EERE
+	in r16, EEDR
+	sts ADCBandgap, r16
+
+	; Check external voltage and bypass it if danger
+	in r16, ACSR
+	andi r16, (1<<ACO)
+	brne ContinueConfigAfterExternalVoltageCheck
+	; External voltage exceeds maximum 6V limit
+	; TODO: ADD correct control, ex. rcall AC_IRQ
+
+	; Open step-up key to drain excess voltage
+	sbi DIMPort, DIMPin
+	sbi DIMPort-1, DIMPin ; DDR
+
+ContinueConfigAfterExternalVoltageCheck:
+
+	; ADMUX at the external channel
+	lds r16, ADCSRA
+	sbr r16, (1<<ADSC)|(1<<ADIE)
+	sts ADCSRA, r16
+
+	GoSleep SlModeADC
+	lds r16, ADCSRA
+	sbrc r16, ADSC
+	rjmp PC-2
+
+	lds r16, ADCH
+	push r16
+
+	;Check ADC calibration values
+	lds r16, ADCGnd
+	cpi r16, 0xFF
+
+
+	breq CalibrateADC
+	rjmp ADCAlreadyCalibrated
+
+CalibrateADC:
+	; Calibration should be performed at first start after programming, on good power source.
+
+	lds r16, ADMUX
+	push r16
+
+	; GND input channel
+	sbr r16, 0x0F
+	sts ADMUX, r16
+
+	lds r16, ADCSRA
+	sbr r16, (1<<ADSC)|(1<<ADIE)
+	sts ADCSRA, r16
+
+	GoSleep SlModeADC
+	lds r16, ADCSRA
+	sbrc r16, ADSC
+	rjmp PC-2
+
+	lds r16, ADCH
+	sts ADCGnd, r16
+
+	; Bandgap input channel
+	lds r16, ADMUX
+	sbr r16, 0x0F
+	cbr r16, 0x01
+	sts ADMUX, r16
+
+	lds r16, ADCSRA
+	sbr r16, (1<<ADSC)|(1<<ADIE)
+	sts ADCSRA, r16
+
+	GoSleep SlModeADC
+	lds r16, ADCSRA
+	sbrc r16, ADSC
+	rjmp PC-2
+
+	lds r16, ADCH
+	sts ADCBandGap, r16
+
+	pop r16
+	sts ADMUX, r16
+
+	;Save to EEPROM - 7ms
+
+	sbic EECR, EEPE
+	rjmp PC-1
+	ldi r16, EEADCBandgap
+	out EEARL, r16
+	lds r16, ADCBandgap
+	out EEDR, r16
+
+	cli
+	sbi EECR, EERIE
+	sbi EECR, EEMPE
+	sbi EECR, EEPE
+	GoSleep SlModeIdle
+
+	sbic EECR, EEPE
+	rjmp PC-1
+	ldi r16, EEADCGnd
+	out EEARL, r16
+	lds r16, ADCGnd
+	out EEDR, r16
+
+	cli
+	sbi EECR, EERIE
+	sbi EECR, EEMPE
+	sbi EECR, EEPE
+	GoSleep SlModeIdle
+
+	cbi EECR, EERIE
+	sbic EECR, EEPE
+	rjmp PC-1
+
+	; Clead pointer to avoid EEPROM corruption
+	clr r16
+	out EEARL, r16
+
+	log "ADC calibrated "
+ADCAlreadyCalibrated:
+	; Result of first conversion
+	; DEBUG
+	lds r16, ADCBandgap
+	logreg r16
+	log "Device started with ADC BG value="
+
+	pop r16
+
+
+
+	;read external voltage from ADC
+
+
+
+	clr r16
+	wdr
+	sei
+
+	; ----------------------------------------------------------------------------
+
+
+test:	ldi r16, (1<<LEDPin)
+	out LedPort-1, r16
+
+loop:	rcall delay
+	sbi LedPORT, LEDPin
+	rcall delay
+	cbi LEDPORT, LEDPin
+	rjmp loop
+
+delay:	push r16
+	ldi r16, 255
+	push r16
+dela:	dec r16
+	brne dela
+	pop r16
+	dec r16
+	push r16
+	brne dela
+	pop r16
+	pop r16
+	ret
+
+
+; ------------------------------------------------------------------------------------
+
+DoSleep: ; Executable fragment of GoSleep macro
+	out SMCR, r16
+	in r16, SREG
+	push r16
+
+	cli
+	#ifdef DisableBODOnSleep
+	in r16, MCUCR
+	ori r16, (1<<BODSE)|(1<<BODS)
+	out MCUCR, r16
+	cbr r16, (1<<BODSE)
+	out MCUCR, r16
+	#endif
+
+	ldi r16, (0<<SE)
+	sei
+	sleep
+
+	out SMCR, r16
+	pop r16
+	out SREG, r16
+	ret
+
+#ifdef LogEnable
+LogWrite: ; Executable fragment of Logging macro
+	; TX Baudrate 115200/8/n - but at 1 Mhz running at 125000 - requires oscillator correction
+	push r16
+	in r16, SREG
+	push r16
+	push r17
+
+	; Power on module
+	#ifndef DisableUsingPRR
+	lds r16, PRR
+	cbr r16, (1<<PRUSART0)
+	sts PRR, r16
+	#endif
+
+	; Module configure
+	ldi r16, (1<<U2X0)
+	sts UCSR0A, r16
+	ldi r16, (3<<UCSZ00) ; 8-bit
+	sts UCSR0C, r16
+	ldi r16, (1<<TXEN0)
+	sts UCSR0B, r16
+
+
+PrintCycle:
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+
+	lpm r16, Z+
+	tst r16
+	breq PrintReg
+	sts UDR0, r16
+	mov r17,r16 ; To print register only if '=' encountered
+
+	rjmp PrintCycle
+
+PrintReg: ; Data from LogTempReg
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+
+	cpi r17, '='
+	breq PC+2
+	rjmp PrintCR
+
+	ldi r16, ' '
+	sts UDR0, r16
+
+	lds ZL, LogTempReg
+	mov ZH, ZL
+	swap ZH
+	cbr ZH, 0xF0
+	cbr ZL, 0xF0
+	subi ZH, 256-'0'
+	subi ZL, 256-'0'
+
+	cpi ZH, '9'+1
+	brlo PC+2
+	subi ZH, '9'-'A'+1
+	cpi ZL, '9'+1
+	brlo PC+2
+	subi ZL, '9'-'A'+1
+
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+
+PrintH:
+	sts UDR0,ZH
+
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+
+PrintL:
+	sts UDR0,ZL
+
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+
+	ldi r16, ' '
+	sts UDR0, r16
+
+	clr ZH ; 100-s counter
+	clr ZL ; 10-s  counter
+	lds r17, LogTempReg
+PrintMod100:
+	cpi r17, 100
+	brlo PrintMod10
+	subi r17, 100
+	inc ZH
+	rjmp PrintMod100
+PrintMod10:
+	cpi r17, 10
+	brlo PrintMod1
+	subi r17, 10
+	inc ZL
+	rjmp PrintMod10
+
+PrintMod1:
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+
+	tst ZH
+	brne Print100
+	tst ZL
+	brne Print10
+	rjmp Print1
+
+Print100:
+	subi ZH, 256-'0'
+	sts UDR0,ZH
+
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+Print10:
+	subi ZL, 256-'0'
+	sts UDR0,ZL
+
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+Print1:
+	subi r17, 256-'0'
+	sts UDR0,r17
+
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+
+PrintCR:
+	ldi r16, 13
+	sts UDR0,r16
+
+	lds r16, UCSR0A
+	sbrs r16, UDRE0
+	rjmp PC-3
+
+	#ifndef DisableUsingPRR
+	; Off TXD to give right logic levels at idle
+	ldi r16, (0<<TXEN0)
+	sts UCSR0B, r16
+
+	ldi r16, 10
+	dec r16
+	brne PC-1
+
+	; Power off module
+	lds r16, PRR
+	sbr r16, (1<<PRUSART0)
+	sts PRR, r16
+	#endif
+
+	pop r17
+	pop r16
+	out SREG, r16
+	pop r16
+	ret
+#endif
